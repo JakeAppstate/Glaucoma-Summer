@@ -13,7 +13,23 @@ from torchvision.transforms import v2 # type: ignore
 
 
 class GlaucomaDataset(Dataset):
+    """
+    This is the class that loads and holds the data for training.
+    
+    This is a Pytorch dataset class that is used by the HuggingFace
+    Trainer. It has the required methods of __init__, __len__ and 
+    __get_item__ which initializes the class, fetches the length of
+    the dataset and gets a specific item.
+    
+    It also includes the split, oversample, save, and get_pos_weight
+    methods to perform specific operations on the dataset such as
+    oversampling."""
     def __init__(self, csv_path, img_dir, hyperparams):
+        """
+        This method initializes the dataset and creates
+        a pandas Dataframe containing the paths to each image
+        and its label.
+        """
         self.resize = hyperparams["RESIZE"]
         self.yolo_size = hyperparams["YOLO-SIZE"]
         self.yolo_path = hyperparams["YOLO-PATH"]
@@ -39,6 +55,12 @@ class GlaucomaDataset(Dataset):
         self.df = df
     
     def __getitem__(self, idx):
+        """
+        This loads an image from the disk, performs preprocessing
+        and data augmentation if necessary. Two rounds of data augmentaion
+        are performed, one on the positive class for oversampling, and
+        one on every image.
+        """
         # img = self._preprocess(self.df["path"][idx])
         # img = self._cache(img, idx)
         img = self._load_img(self.df["path"][idx])
@@ -63,6 +85,10 @@ class GlaucomaDataset(Dataset):
         return output
 
     def __len__(self):
+        """
+        This method return the length when using
+        the len function.
+        """
         return len(self.df)
 
     # def load(self):
@@ -71,6 +97,10 @@ class GlaucomaDataset(Dataset):
     #         _ = self[index]
 
     def _get_folder(self, id):
+        """
+        This is a helper function which gets the folder a
+        given image resides in.
+        """
         pattern = r"\d+"
         n = int(re.findall(pattern, id)[0])
         if n <= 17407:
@@ -90,6 +120,12 @@ class GlaucomaDataset(Dataset):
         self.df = df
 
     def oversample(self):
+        """
+        This method performs over sampling on the dataset
+        such that the positive and negative classes
+        are balanced. Augmentation for oversampling occurs
+        when fetching the item.
+        """
         # Select Images to oversample and add them to the dataframe
         # The augmentation is performed in the getitem method
         self.is_oversample = True
@@ -104,6 +140,10 @@ class GlaucomaDataset(Dataset):
         self.df = pd.concat([df, new_rows], ignore_index=True)
 
     def _oversample(self, img):
+        """
+        This is a helper method that performs data augmentation
+        on the specified oversample images.
+        """
         # tf.keras.layers.RandomFlip(),
         # tf.keras.layers.RandomRotation(0.2),
         return v2.Compose([
@@ -113,12 +153,23 @@ class GlaucomaDataset(Dataset):
         ])(img)
     
     def save(self, save_dir):
+        """
+        This method performs the preprocessing steps on
+        all images and saves them to the disk. This is done to
+        prevent preprocessing occuring over every epoch.
+        """
         print("save")
         for path in self.df["path"]:
             # TODO add multiprocessing
             self._encode(path, save_dir)
     
     def _run_yolo(self, img):
+        """
+        This is a helper function that runs yolo and gets
+        the center of the resulting bounding box. This is
+        then converted to the original 2,000 x 2,000 pixel
+        image.
+        """
         img = v2.functional.to_dtype(img, torch.float32, scale=True)
         img = v2.functional.resize(img, self.yolo_size)
         img = torch.unsqueeze(img, 0) # add a batch of 1 for YOLO
@@ -150,6 +201,9 @@ class GlaucomaDataset(Dataset):
     #     # return self._preprocess(image_path)
     
     def _preprocess(self, image_path):
+        """
+        This is the helper method that performs all pf
+        the preprocessing including CLAHE and YOLO."""
         print("Preprocess")
         print(image_path)
         # Load and resize image
@@ -186,6 +240,10 @@ class GlaucomaDataset(Dataset):
         return img
     
     def _encode(self, image_path, save_dir):
+        """
+        This method loads an image and encodes it as a JPG.
+        This needs to be modified so that it is saved as a png and
+        saves all images."""
         # encode image as png to reduce cache size
         # is decoded in _load_img
         print("encode")
@@ -206,12 +264,17 @@ class GlaucomaDataset(Dataset):
         # raise RuntimeError("Breakpoint")
         
 
-    def _decode(self, png):
-        img = cv2.imdecode(png, cv2.IMREAD_UNCHANGED)
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        return v2.functional.to_image(img)
+    # Used when trying to cache in memory instead of disk.
+    # Might still be useful in loading preprocessed images.
+    # def _decode(self, png):
+    #     img = cv2.imdecode(png, cv2.IMREAD_UNCHANGED)
+    #     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    #     return v2.functional.to_image(img)
     
     def get_pos_weight(self):
+        """
+        This method return the ratio of negative samples
+        to positive samples. This is used to weight the loss function when training."""
         neg = self.df[self.df["label"] == 0]
         pos = self.df[self.df["label"] == 1]
         print(neg, pos)
@@ -219,6 +282,10 @@ class GlaucomaDataset(Dataset):
     
     @staticmethod
     def split(ds, val_ratio, test_ratio):
+        """
+        This is a static method desined to split a given dataset of type
+        GlaucomaDataset into train, val and test sets.
+        """
         neg = ds.df[ds.df["label"] == 0]
         pos = ds.df[ds.df["label"] == 1]
         n_val = int(len(pos) * val_ratio)
