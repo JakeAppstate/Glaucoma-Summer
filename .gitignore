@@ -1,0 +1,7 @@
+data
+cacert.pem
+wandb
+output
+models
+slurm_script.sh
+*.png
