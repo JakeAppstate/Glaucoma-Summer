@@ -1,5 +1,4 @@
 import os
-import pandas as pd
 
 # pd.show_versions()
 
@@ -27,11 +26,13 @@ data_path = "data/"
 csv_name = "labels.csv"
 save_dir = "preprocessed"
 csv_path = os.path.join(data_path, csv_name)
+save_path = os.path.join(data_path, save_dir)
 
 dataset = GlaucomaDataset(csv_path, data_path, hyperparams)
 pos_weight = dataset.get_pos_weight()
 train, val, test = GlaucomaDataset.split(dataset, hyperparams["VAL-SPLIT"], hyperparams["TEST-SPLIT"])
 train.oversample()
 
-train.save(os.path.join(data_path, save_dir, "train"))
-val.save(os.path.join(data_path, save_dir, "val"))
+
+train.save(save_path)
+val.save(save_path)

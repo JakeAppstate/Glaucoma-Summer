@@ -1,11 +1,13 @@
 from transformers import Trainer, AutoModelForImageClassification, AutoConfig
+# from transformers.models.deit.modeling_deit import DeiTForImageClassificationWithTeacher
 import torch
 # from torcheval.metrics.functional import binary_accuracy
 
 class WeightedTrainer(Trainer):
-    def __init__(self, pos_weight, **kwargs):
+    def __init__(self, pos_weight, teacher_model = None, **kwargs):
         super().__init__(**kwargs)
         self.pos_weight = torch.tensor(pos_weight)
+        self.teacher = teacher_model
     
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         # Note: may want to set remove_unused_columns to False in TrainingArgs
@@ -13,11 +15,18 @@ class WeightedTrainer(Trainer):
         loss_fun = torch.nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
         labels = inputs.pop("labels")
         outputs = model(interpolate_pos_encoding = True, **inputs)
-        logits = torch.squeeze(outputs.logits)
-        loss = loss_fun(logits, labels)
+        if self.teacher is not None:
+            cls_logits = outputs.cls_logits
+            dist_logits = outputs.distillation_logits
+            teacher_output = self.teacher(interpolate_pos_encoding = True, **inputs)
+            teacher_logits = teacher_output.logits
+            loss = 0.5 * loss_fun(cls_logits, labels) + 0.5 * loss_fun(dist_logits, teacher_logits)
+        else:
+            logits = torch.squeeze(outputs.logits)
+            loss = loss_fun(logits, labels)
         return (loss, outputs) if return_outputs else loss
     
-    def compute_metrics(eval_pred):
+    def compute_metrics(self, eval_pred):
         predictions, labels = eval_pred
         # acc = binary_accuracy(labels, predictions, threshold=0)
         preds = (predictions > 0).astype(torch.int)

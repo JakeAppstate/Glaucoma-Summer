@@ -10,7 +10,7 @@ import torch # type: ignore
 from torch.utils.data import Dataset # type: ignore
 # from torchvision.io import read_image # type: ignore
 from torchvision.transforms import v2 # type: ignore
-
+from torchvision.io import decode_jpeg, write_jpeg
 
 class GlaucomaDataset(Dataset):
     """
@@ -34,13 +34,14 @@ class GlaucomaDataset(Dataset):
         self.yolo_size = hyperparams["YOLO-SIZE"]
         self.yolo_path = hyperparams["YOLO-PATH"]
         self.target_size = hyperparams["TARGET-SIZE"]
+        self.save_path = hyperparams.get("SAVE-PATH") # None if key is not in dict
         seed = hyperparams["SEED"]
 
         np.random.seed(seed)
         torch.manual_seed(seed)
 
         self.is_oversample = False
-        self.is_test = False
+        self.type = "" # not sure what default value should be
 
         columns = ["Eye ID", "Final Label"]
         df = pd.read_csv(csv_path, sep=';')[columns] # drop all unspecified columns
@@ -51,7 +52,6 @@ class GlaucomaDataset(Dataset):
         df["label"] = (df["Final Label"] != "NRG").astype(dtype = np.int32)
         df = df.drop(columns, axis=1)
         
-        print(len(df))
         self.df = df
     
     def __getitem__(self, idx):
@@ -63,7 +63,15 @@ class GlaucomaDataset(Dataset):
         """
         # img = self._preprocess(self.df["path"][idx])
         # img = self._cache(img, idx)
-        img = self._load_img(self.df["path"][idx])
+        orig_path = self.df["path"][idx]
+        if self.save_path and os.path.exists(self.save_path):
+            filename = os.path.basename(orig_path)
+            path = os.path.join(self.save_path, self.type, filename)
+            img = decode_jpeg(path)
+        else:
+            # TODO verify that images being on the gpu doesn't
+            # mess up DataLoader
+            img = self._preprocess(orig_path)
 
         if self.is_oversample and self.df["oversample"][idx]:
             img = self._oversample(img)
@@ -115,9 +123,6 @@ class GlaucomaDataset(Dataset):
             return 4
         else:
             return 5
-        
-    def _set_df(self, df):
-        self.df = df
 
     def oversample(self):
         """
@@ -158,8 +163,10 @@ class GlaucomaDataset(Dataset):
         all images and saves them to the disk. This is done to
         prevent preprocessing occuring over every epoch.
         """
-        print("save")
-        for path in self.df["path"]:
+        save_dir = os.path.join(save_dir, self.type)
+        os.makedirs(save_dir, exist_ok=True)
+        df = self.df[self.df["oversample"] == False] if "oversample" in self.df.columns else self.df
+        for path in df["path"]:
             # TODO add multiprocessing
             self._encode(path, save_dir)
     
@@ -173,7 +180,7 @@ class GlaucomaDataset(Dataset):
         img = v2.functional.to_dtype(img, torch.float32, scale=True)
         img = v2.functional.resize(img, self.yolo_size)
         img = torch.unsqueeze(img, 0) # add a batch of 1 for YOLO
-        yolo = torch.jit.load(self.yolo_path, map_location=torch.device("cuda")) # TODO add self.model_path
+        yolo = torch.jit.load(self.yolo_path, map_location=torch.device("cuda"))
         with torch.no_grad():
             output = yolo(img)
 
@@ -204,8 +211,6 @@ class GlaucomaDataset(Dataset):
         """
         This is the helper method that performs all pf
         the preprocessing including CLAHE and YOLO."""
-        print("Preprocess")
-        print(image_path)
         # Load and resize image
         img = cv2.imread(image_path)
         # self.size = (2_000, 2_000) # TODO add to params
@@ -237,39 +242,24 @@ class GlaucomaDataset(Dataset):
         x, y, w, h = int(x), int(y), int(w), int(h)
         img = v2.functional.crop(img, y, x, h, w)
         # raise RuntimeError("Breakpoint")
-        return img
+        return img.cpu()
     
     def _encode(self, image_path, save_dir):
         """
-        This method loads an image and encodes it as a JPG.
-        This needs to be modified so that it is saved as a png and
-        saves all images."""
-        # encode image as png to reduce cache size
-        # is decoded in _load_img
-        print("encode")
-        img = self._preprocess(image_path)
-        # return
-
-        pattern = r"\d+.JPG"
-        filename = re.findall(pattern, image_path)[0]
-
-        img = img.cpu().numpy().transpose((1, 2, 0))
-        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-
-        os.makedirs(save_dir, exist_ok=True)
+        This method loads an image and encodes it as a JPEG.
+        """
+        # Make sure path exists, otherwise image is not saved
+        filename = os.path.basename(image_path)
         save_path = os.path.join(save_dir, filename)
-        print(save_path)
-        cv2.imwrite(save_path, img)
 
-        # raise RuntimeError("Breakpoint")
-        
+        img = self._preprocess(image_path)
+        write_jpeg(img, save_path)
 
-    # Used when trying to cache in memory instead of disk.
-    # Might still be useful in loading preprocessed images.
-    # def _decode(self, png):
-    #     img = cv2.imdecode(png, cv2.IMREAD_UNCHANGED)
-    #     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    #     return v2.functional.to_image(img)
+        # the following code might be faster some how?
+        # would need to do a speed test
+        # img = img.cpu().numpy().transpose((1, 2, 0))
+        # img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        # cv2.imwrite(save_path, img)
     
     def get_pos_weight(self):
         """
@@ -279,7 +269,7 @@ class GlaucomaDataset(Dataset):
         pos = self.df[self.df["label"] == 1]
         print(neg, pos)
         return len(neg) / len(pos)
-    
+
     @staticmethod
     def split(ds, val_ratio, test_ratio):
         """
@@ -306,11 +296,13 @@ class GlaucomaDataset(Dataset):
         train_df = pd.concat([neg, pos], ignore_index=True)
 
         train = copy.copy(ds)
-        train._set_df(train_df)
+        train.df = train_df
+        train.type = "train"
         val = copy.copy(ds)
-        val._set_df(val_df)
+        val.df = val_df
+        val.type = "val"
         test = copy.copy(ds)
-        test._set_df(test_df)
-        test.is_test = True
+        test.df = test_df
+        test.type = "test"
 
         return train, val, test

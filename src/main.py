@@ -28,7 +28,8 @@ hyperparams = {
 
 hf_params = {
     "problem_type": "single_label_classification",
-    "num_labels": 1
+    "num_labels": 1,
+    "ignore_mismatched_sizes": True
     # "attention_probs_dropout_prob": 0.1,
     # "hidden_dropout_prob": 0.1,
     # "window_size": 7 # For SWIN if needed
@@ -45,12 +46,9 @@ data_path = "data/"
 csv_name = "labels.csv"
 csv_path = os.path.join(data_path, csv_name)
 
-print("test")
 dataset = GlaucomaDataset(f"{data_path}{csv_name}", data_path, hyperparams)
 pos_weight = dataset.get_pos_weight()
-print("test1")
 train, val, test = GlaucomaDataset.split(dataset, hyperparams["VAL-SPLIT"], hyperparams["TEST-SPLIT"])
-print("test2")
 train.oversample()
 
 # print("Caching all sample in train set")
@@ -93,17 +91,21 @@ training_args = TrainingArguments(
     logging_first_step = True,
     logging_steps = 0.1,
     bf16 = True,
-    skip_memory_metrics = False,
-    dataloader_persistent_workers = True
     # The trainer will automatically handle distributed training
 )
 
 # Use Huggingface Trainer
+TEACHER_NAME = "ViT"
 for (name, id) in models.items():
     model = get_model(id, have_trained=False, **hf_params)
     training_args.output_dir = os.path.join("models", name)
     training_args.run_name = name
+    teacher = None
+    if name == "DeiT":
+        teacher = get_model(os.path.join("models", TEACHER_NAME), have_trained=True)
     trainer = WeightedTrainer(pos_weight, model = model, args = training_args, 
-                            train_dataset = train, eval_dataset = val)
+                            train_dataset = train, eval_dataset = val,
+                            teacher_model = teacher)
 
     trainer.train()
+    trainer.save_model(training_args.output_dir)
