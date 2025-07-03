@@ -5,3 +5,4 @@ output
 models
 slurm_script.sh
 *.png
+src/__pycache__/
