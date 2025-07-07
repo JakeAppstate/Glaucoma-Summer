@@ -1,7 +1,7 @@
+# pylint: disable=import-error
 import re
 import os
 import copy
-# from functools import cache
 import numpy as np # type: ignore
 import cv2 # type: ignore
 import pandas as pd #type: ignore
@@ -10,7 +10,7 @@ import torch # type: ignore
 from torch.utils.data import Dataset # type: ignore
 # from torchvision.io import read_image # type: ignore
 from torchvision.transforms import v2 # type: ignore
-from torchvision.io import decode_jpeg, write_jpeg
+from torchvision.io import decode_image, write_jpeg
 
 class GlaucomaDataset(Dataset):
     """
@@ -67,7 +67,7 @@ class GlaucomaDataset(Dataset):
         if self.save_path and os.path.exists(self.save_path):
             filename = os.path.basename(orig_path)
             path = os.path.join(self.save_path, self.type, filename)
-            img = decode_jpeg(path)
+            img = decode_image(path)
         else:
             # TODO verify that images being on the gpu doesn't
             # mess up DataLoader
@@ -267,7 +267,7 @@ class GlaucomaDataset(Dataset):
         to positive samples. This is used to weight the loss function when training."""
         neg = self.df[self.df["label"] == 0]
         pos = self.df[self.df["label"] == 1]
-        print(neg, pos)
+        print(len(neg), len(pos))
         return len(neg) / len(pos)
 
     @staticmethod

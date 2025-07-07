@@ -1,12 +1,8 @@
-
+# pylint: disable=import-error
 import os
+from transformers import TrainingArguments
 import wandb
-import numpy as np
 import torch
-import cv2
-
-from transformers import TrainingArguments, Trainer
-from transformers import ViTForImageClassification
 
 from data import GlaucomaDataset
 from trainer import WeightedTrainer, get_model
@@ -19,11 +15,14 @@ hyperparams = {
     "TARGET-SIZE": (512, 512),
 
     "YOLO-PATH": "models/yolo.torchscript",
+    "SAVE-PATH": "data/preprocessed",
 
     "VAL-SPLIT": 0.1,
     "TEST-SPLIT": 0.1,
 
-    "NUM-LABELS": 1 # Binary Classification
+    "NUM-LABELS": 1, # Binary Classification
+    "SEED": 9,
+    "EPOCHS": 5
 }
 
 hf_params = {
@@ -36,10 +35,13 @@ hf_params = {
 }
 
 models = {
-    "ViT": 'google/vit-base-patch16-224-in21k',
-    "DeiT": "facebook/deit-base-distilled-patch16-224",
-    "SWIN": "microsoft/swin-base-patch4-window7-224"
+    "ViT": ('google/vit-base-patch16-224-in21k', 64),
+    "DeiT": ("facebook/deit-base-distilled-patch16-224", 60),
+    "SWIN": ("microsoft/swin-base-patch4-window7-224", 32)
 }
+
+# os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+# print(os.environ["PYTORCH_CUDA_ALLOC_CONF"])
 
 
 data_path = "data/"
@@ -50,25 +52,7 @@ dataset = GlaucomaDataset(f"{data_path}{csv_name}", data_path, hyperparams)
 pos_weight = dataset.get_pos_weight()
 train, val, test = GlaucomaDataset.split(dataset, hyperparams["VAL-SPLIT"], hyperparams["TEST-SPLIT"])
 train.oversample()
-
-# print("Caching all sample in train set")
-# train.load() # Cache all samples in memory
-# print("Finished Caching training set")
-
-# load datasets
-# train_dataloader = DataLoader(train, batch_size=64, shuffle=True)
-# val_dataloader = DataLoader(val, batch_size=64, shuffle=True)
-
-# data = train[0]
-# img = data["pixel_values"].numpy().transpose((1, 2, 0))
-# print(img.shape)
-# img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-# cv2.imwrite("test-img.png", img)
-# raise RuntimeError("Testing Image")
-
-# model_name = "ViT"
-# model_path = 'google/vit-base-patch16-224-in21k'
-# model = get_model(model_path, have_trained=False, **hf_params)
+torch.cuda.empty_cache()
 
 training_args = TrainingArguments(
     # output_dir = os.path.join("models", model_name),
@@ -80,7 +64,7 @@ training_args = TrainingArguments(
     per_device_train_batch_size = 64,  # Per GPU batch size
     learning_rate = 1e-5,
     weight_decay = 1e-4,
-    num_train_epochs = 2,
+    num_train_epochs = hyperparams["EPOCHS"],
     # Might need to be 0 for caching?
     # TODO Change how Caching works
     # Either load all data before training
@@ -88,24 +72,27 @@ training_args = TrainingArguments(
     dataloader_num_workers = 8,
     report_to = "wandb",
     logging_strategy = "steps",
-    logging_first_step = True,
-    logging_steps = 0.1,
+    logging_steps = 0.1 / hyperparams["EPOCHS"],
     bf16 = True,
+    seed = hyperparams["SEED"],
+    label_names = ["labels"]
     # The trainer will automatically handle distributed training
 )
 
 # Use Huggingface Trainer
 TEACHER_NAME = "ViT"
-for (name, id) in models.items():
+for name, (id, batch_size) in models.items():
     model = get_model(id, have_trained=False, **hf_params)
     training_args.output_dir = os.path.join("models", name)
     training_args.run_name = name
     teacher = None
     if name == "DeiT":
         teacher = get_model(os.path.join("models", TEACHER_NAME), have_trained=True)
+    training_args.per_device_train_batch_size = batch_size
     trainer = WeightedTrainer(pos_weight, model = model, args = training_args, 
                             train_dataset = train, eval_dataset = val,
                             teacher_model = teacher)
 
     trainer.train()
     trainer.save_model(training_args.output_dir)
+    wandb.finish()
