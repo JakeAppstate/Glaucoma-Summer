@@ -22,7 +22,7 @@ hyperparams = {
 
     "NUM-LABELS": 1, # Binary Classification
     "SEED": 9,
-    "EPOCHS": 5
+    "EPOCHS": 10
 }
 
 hf_params = {
@@ -65,17 +65,14 @@ training_args = TrainingArguments(
     learning_rate = 1e-5,
     weight_decay = 1e-4,
     num_train_epochs = hyperparams["EPOCHS"],
-    # Might need to be 0 for caching?
-    # TODO Change how Caching works
-    # Either load all data before training
-    # or cache as large tensor in memory
     dataloader_num_workers = 8,
     report_to = "wandb",
     logging_strategy = "steps",
     logging_steps = 0.1 / hyperparams["EPOCHS"],
     bf16 = True,
     seed = hyperparams["SEED"],
-    label_names = ["labels"]
+    label_names = ["labels"],
+    label_smoothing_factor = 0.1
     # The trainer will automatically handle distributed training
 )
 
@@ -89,10 +86,11 @@ for name, (id, batch_size) in models.items():
     if name == "DeiT":
         teacher = get_model(os.path.join("models", TEACHER_NAME), have_trained=True)
     training_args.per_device_train_batch_size = batch_size
-    trainer = WeightedTrainer(pos_weight, model = model, args = training_args, 
+    trainer = WeightedTrainer(pos_weight, model = model, args = training_args,
                             train_dataset = train, eval_dataset = val,
                             teacher_model = teacher)
 
     trainer.train()
     trainer.save_model(training_args.output_dir)
+    # trainer.evaluate(val)
     wandb.finish()
