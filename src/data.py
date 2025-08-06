@@ -12,6 +12,7 @@ from torch.utils.data import Dataset # type: ignore
 from torchvision.transforms import v2 # type: ignore
 from torchvision.io import decode_image, write_jpeg
 
+# pylint: disable-next=too-many-instance-attributes
 class GlaucomaDataset(Dataset):
     """
     This is the class that loads and holds the data for training.
@@ -48,12 +49,12 @@ class GlaucomaDataset(Dataset):
         df["path"] = df["Eye ID"] \
             .map(lambda id: os.path.join(img_dir, str(self._get_folder(id)), f"{id}.JPG"))
         df = df[df["path"].map(os.path.exists)] # filter if image exists
-        
+
         df["label"] = (df["Final Label"] != "NRG").astype(dtype = np.int32)
         df = df.drop(columns, axis=1)
-        
+
         self.df = df
-    
+
     def __getitem__(self, idx):
         """
         This loads an image from the disk, performs preprocessing
@@ -77,7 +78,9 @@ class GlaucomaDataset(Dataset):
             img = self._oversample(img)
 
         # hyperparams from https://arxiv.org/pdf/2106.10270 med2
-        img = v2.RandAugment(num_ops = 2, magnitude = 15)(img)
+        # DO NOT AUGMENT VALIDATION SET!
+        if self.type == "train":
+            img = v2.RandAugment(num_ops = 2, magnitude = 15)(img)
 
         img = v2.functional.to_dtype(img, torch.float32)
         # mean and std are from ImageNet
@@ -269,6 +272,11 @@ class GlaucomaDataset(Dataset):
         pos = self.df[self.df["label"] == 1]
         print(len(neg), len(pos))
         return len(neg) / len(pos)
+    
+    def sample(self, n, n_pos):
+        neg = self.df[self.df["label"] == 0].sample(n = n - n_pos)
+        pos = self.df[self.df["label"] == 1].sample(n = n_pos)
+        self.df = pd.concat([neg, pos], ignore_index = True)
 
     @staticmethod
     def split(ds, val_ratio, test_ratio):

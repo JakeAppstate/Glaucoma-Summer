@@ -1,9 +1,12 @@
 # pylint: disable=import-error
-from transformers import Trainer, EvalPrediction, AutoModelForImageClassification, AutoConfig
-from sklearn.metrics import accuracy_score, recall_score, roc_curve, roc_auc_score
+from transformers import Trainer, EvalPrediction, AutoModelForImageClassification, \
+                         AutoConfig, get_linear_schedule_with_warmup
+from sklearn.metrics import recall_score, roc_curve, roc_auc_score
+from sklearn.calibration import calibration_curve
 # from transformers.models.deit.modeling_deit import DeiTForImageClassificationWithTeacher
 import torch
 import numpy as np
+import wandb
 # from torcheval.metrics.functional import binary_accuracy
 
 class WeightedTrainer(Trainer):
@@ -21,12 +24,13 @@ class WeightedTrainer(Trainer):
         self.training_preds = torch.full((n,), -1)
         self.training_labels = torch.full((n,), -1)
         self.is_training = False # Will be set to True when training starts
-    
+
+    # pylint: disable-next=unused-argument
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         loss_fun = torch.nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
         labels = inputs.pop("labels")
         eps = self.args.label_smoothing_factor or 0
-        labels_smoothed = labels.clamp(eps / 2, 1 - (eps / 2))
+        labels_smoothed = labels.clamp(eps, 1 - eps)
         labels_smoothed = labels
         # print("labels smoothed:", labels_smoothed)
         outputs = model(interpolate_pos_encoding = True, **inputs)
@@ -48,15 +52,13 @@ class WeightedTrainer(Trainer):
         # May want to make it is own function
         self._log_training_metrics(model.training, labels, logits)
         return (loss, outputs) if return_outputs else loss
-    
+
     def _log_training_metrics(self, model_training, labels, logits):
         if not model_training and self.is_training:
             # Starting evaluation
             # Compute all train metrics and log
             labels = self.training_labels.cpu().numpy()
             logits = self.training_preds.cpu().numpy()
-            print("labels min:", np.min(labels))
-            print("logits min:", np.min(logits))
             eval_pred = EvalPrediction(predictions = logits, label_ids=labels)
             metrics = self.compute_metrics(eval_pred)
             self.log(metrics)
@@ -76,7 +78,7 @@ class WeightedTrainer(Trainer):
         preds = (predictions > threshold).astype(np.int32)
         acc = np.mean(preds == labels).item()
         return acc
-    
+
     def _get_auc(self, predictions, labels):
         pass
 
@@ -115,6 +117,15 @@ class WeightedTrainer(Trainer):
         sensitivity = recall_score(labels, preds)
         return sensitivity, threshold
     
+    def _plot_confidence(self, preds, labels):
+        prob_true, prob_pred = calibration_curve(labels, preds, n_bins=10)
+        data = [[x, y] for (x, y) in zip(prob_pred, prob_true)]
+        axis_names = ["Mean predicted probability", "Fraction of positives"]
+        table = wandb.Table(data=data, columns=axis_names)
+        wandb.log({
+            "Calibration-Plot": wandb.plot.line(table, *axis_names, title = "Calibration Plot")
+        })
+
     def _compute_metrics(self, eval_pred):
         predictions = np.squeeze(eval_pred.predictions)
         if self.teacher is not None:
@@ -125,9 +136,9 @@ class WeightedTrainer(Trainer):
             return 1/(1 + np.exp(-x))
         # convert logits to a probability distribution
         predictions = sigmoid(predictions)
-        print(predictions)
         metrics = {}
         metrics["accuracy"] = self._get_accuracy(predictions, labels)
+        metrics["Accuracy"] = metrics["accuracy"]
         sensitivity, threshold = self._get_sens_at_95_spec(predictions, labels)
         metrics["sensitivity at 95% specificity"] = sensitivity
         metrics["accuracy with threshold"] = self._get_accuracy(predictions, labels, threshold)
@@ -142,15 +153,28 @@ class WeightedTrainer(Trainer):
         metrics["True Positive"] = self._get_tp(predictions, labels)
         metrics["True Positive with threshold"] = self._get_tp(predictions, labels, threshold)
 
+        self._plot_confidence(predictions, labels)
         return metrics
-        
+    
+    # def create_optimizer_and_scheduler(self, num_training_steps: int):
+    #     # Your custom optimizer and scheduler creation logic here
+    #     optimizer = torch.optim.AdamW(self.model.parameters(),
+    #                                   lr=self.args.learning_rate,
+    #                                   weight_decay = self.args.weight_decay)
+    #     lr_scheduler = get_linear_schedule_with_warmup(
+    #         optimizer, num_warmup_steps=self.args.num_warmup_steps,
+    #         num_training_steps=num_training_steps
+    #     )
+    #     return optimizer, lr_scheduler
+
+
 def get_model(hf_id, have_trained, **hf_params):
     if have_trained:
         model = AutoModelForImageClassification.from_pretrained(hf_id)
     else:
         config = AutoConfig.from_pretrained(hf_id, **hf_params)
-        model = AutoModelForImageClassification.from_pretrained(hf_id, config = config, ignore_mismatched_sizes=True)
-    
+        model = AutoModelForImageClassification.from_pretrained(hf_id, config = config,
+                                                                ignore_mismatched_sizes=True)
     return model
 
 def collate_fn(batch):
@@ -168,12 +192,12 @@ def _aprox_binary_search(array, target, left = None, right = None):
     if left == right:
         if left == 0:
           # at beginning of array, can be 0 or 1
-          right += 1
-          return left if np.abs(array[left] - target) < np.abs(array[right] - target) else right
+            right += 1
+            return left if np.abs(array[left] - target) < np.abs(array[right] - target) else right
         if right == len(array) - 1:
-          # at end of array, can be len(array) -1 or -2
-          left -= 1
-          return left if np.abs(array[left] - target) < np.abs(array[right] - target) else right
+            # at end of array, can be len(array) -1 or -2
+            left -= 1
+            return left if np.abs(array[left] - target) < np.abs(array[right] - target) else right
         # can be left +- 1
         return int(np.argmin(np.abs(array[left-1:left+2] - target))) + left - 1
 
@@ -186,7 +210,3 @@ def _aprox_binary_search(array, target, left = None, right = None):
     else:
         left = mid + 1
     return _aprox_binary_search(array, target, left, right)
-
-
-
-

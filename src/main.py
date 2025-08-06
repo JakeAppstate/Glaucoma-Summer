@@ -1,11 +1,11 @@
 # pylint: disable=import-error
 import os
-from transformers import TrainingArguments
+from transformers import TrainingArguments, EarlyStoppingCallback
 import wandb
 import torch
 
 from data import GlaucomaDataset
-from trainer import WeightedTrainer, get_model
+from trainer import WeightedTrainer, get_model, collate_fn
 
 wandb.login()
 
@@ -22,22 +22,23 @@ hyperparams = {
 
     "NUM-LABELS": 1, # Binary Classification
     "SEED": 9,
-    "EPOCHS": 10
+    "TARGET-METRIC": "sensitivity at 95% specificity",
+    "EPOCHS": 50
 }
 
 hf_params = {
     "problem_type": "single_label_classification",
     "num_labels": 1,
-    "ignore_mismatched_sizes": True
-    # "attention_probs_dropout_prob": 0.1,
-    # "hidden_dropout_prob": 0.1,
+    "ignore_mismatched_sizes": True,
+    "attention_probs_dropout_prob": 0.3,
+    "hidden_dropout_prob": 0,
     # "window_size": 7 # For SWIN if needed
 }
 
 models = {
     "ViT": ('google/vit-base-patch16-224-in21k', 64),
-    "DeiT": ("facebook/deit-base-distilled-patch16-224", 60),
-    "SWIN": ("microsoft/swin-base-patch4-window7-224", 32)
+    # "DeiT": ("facebook/deit-base-distilled-patch16-224", 60),
+    # "SWIN": ("microsoft/swin-base-patch4-window7-224", 32)
 }
 
 # os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -59,11 +60,11 @@ training_args = TrainingArguments(
     # overwrite_output_dir = True,
     load_best_model_at_end = True,
     save_strategy = "best",
-    metric_for_best_model = "eval_loss",
+    metric_for_best_model = f'eval_{hyperparams["TARGET-METRIC"]}',
     eval_strategy = "epoch",
     per_device_train_batch_size = 64,  # Per GPU batch size
-    learning_rate = 1e-5,
-    weight_decay = 1e-4,
+    learning_rate = 8e-5,
+    weight_decay = 5e-4,
     num_train_epochs = hyperparams["EPOCHS"],
     dataloader_num_workers = 8,
     report_to = "wandb",
@@ -72,8 +73,15 @@ training_args = TrainingArguments(
     bf16 = True,
     seed = hyperparams["SEED"],
     label_names = ["labels"],
+    warmup_ratio = 0.1,
+    lr_scheduler_type="linear",
     label_smoothing_factor = 0.1
     # The trainer will automatically handle distributed training
+)
+
+early_stopping = EarlyStoppingCallback(
+    early_stopping_patience = 15,
+    early_stopping_threshold = 0.01
 )
 
 # Use Huggingface Trainer
@@ -88,7 +96,8 @@ for name, (id, batch_size) in models.items():
     training_args.per_device_train_batch_size = batch_size
     trainer = WeightedTrainer(pos_weight, model = model, args = training_args,
                             train_dataset = train, eval_dataset = val,
-                            teacher_model = teacher)
+                            teacher_model = teacher,
+                            callbacks=[early_stopping])
 
     trainer.train()
     trainer.save_model(training_args.output_dir)

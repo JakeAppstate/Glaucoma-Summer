@@ -5,4 +5,7 @@ output
 models
 slurm_script.sh
 *.png
+*.jpg
+*.npy
 src/__pycache__/
+.vscode
